@@ -398,6 +398,26 @@ This function is used when `switch-window-multiple-frames' is non-nil."
   :type 'function
   :group 'switch-window)
 
+(defcustom switch-window-ignore-rules nil
+  "Rules to ignore windows during `switch-window' selection.
+
+Only the following forms are supported:
+
+  (:name \"BUFFER\")
+  (:mode major-mode-symbol)
+  (:regexp \"REGEXP\")
+
+Any other form is invalid."
+  :type '(repeat
+	  (choice
+	   (list :tag "Ignore by exact buffer name"
+		 (const :name) (string :tag "Buffer name"))
+	   (list :tag "Ignore by major mode"
+		 (const :mode) (symbol :tag "Major mode"))
+	   (list :tag "Ignore by regexp on buffer name"
+		 (const :regexp) (regexp :tag "Regexp"))))
+  :group 'switch-window)
+
 (defface switch-window-label
   '((t (:inherit font-lock-builtin-face :height 3.0)))
   "Face used by switch-window's key.")
@@ -457,6 +477,31 @@ windows from all frames. Call `other-window' otherwise."
   "Return the label to use for a given window NUM."
   (nth (- num 1) (switch-window--enumerate)))
 
+(defun switch-window--ignore-rule-match-p (rule buffer)
+  "Return non-nil if RULE matches BUFFER.
+RULE must be one of (:name STRING), (:mode SYMBOL), (:regexp REGEXP)."
+  (let ((name (buffer-name buffer))
+        (mode (buffer-local-value 'major-mode buffer)))
+    (pcase rule
+      (`(:name ,n)   (string= name n))
+      (`(:mode ,m)   (eq mode m))
+      (`(:regexp ,r) (string-match-p r name))
+      (_ (error "Invalid `switch-window-ignore-rules' entry: %S" rule)))))
+
+(defun switch-window--ignore-window-p (window)
+  "Return non-nil if WINDOW should be ignored per `switch-window-ignore-rules'."
+  (let ((buffer (window-buffer window)))
+    (cl-some (lambda (rule)
+               (switch-window--ignore-rule-match-p rule buffer))
+             switch-window-ignore-rules)))
+
+(defun switch-window--filter-window-list (windows)
+  "Return WINDOWS filtered by `switch-window-ignore-rules'."
+  (if (null switch-window-ignore-rules)
+      windows
+    (cl-remove-if #'switch-window--ignore-window-p windows)))
+
+
 (defun switch-window--list (&optional from-current-window)
   "List windows for current frame.
 It will start at top left unless FROM-CURRENT-WINDOW is not nil"
@@ -465,15 +510,16 @@ It will start at top left unless FROM-CURRENT-WINDOW is not nil"
         (frames (if (bound-and-true-p switch-window-multiple-frames)
                     (funcall switch-window-frame-list-function)
                   (list (selected-frame)))))
-    (cl-loop for frm in (if relative
-                            (cons (selected-frame)
-                                  (cl-remove (selected-frame) frames))
-                          (cl-sort frames
-                                   'switch-window--compare-frame-positions))
-             append (window-list frm nil
-                                 (unless (and relative
-                                              (equal frm (selected-frame)))
-                                   (frame-first-window frm))))))
+    (switch-window--filter-window-list
+     (cl-loop for frm in (if relative
+                             (cons (selected-frame)
+                                   (cl-remove (selected-frame) frames))
+                           (cl-sort frames
+                                    'switch-window--compare-frame-positions))
+              append (window-list frm nil
+                                  (unless (and relative
+                                               (equal frm (selected-frame)))
+                                    (frame-first-window frm)))))))
 
 (defun switch-window--compare-frame-positions (frm1 frm2)
   "Compare positions between two frames FRM1 and FRM2."
